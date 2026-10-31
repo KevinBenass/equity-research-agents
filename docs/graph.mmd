@@ -1,0 +1,38 @@
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	recall(recall)
+	planner(planner)
+	worker(worker)
+	merge(merge)
+	writer(writer)
+	critic(critic)
+	count_revision(count_revision)
+	dispatch_gaps(dispatch_gaps)
+	human_review(human_review)
+	finalize(finalize)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> recall;
+	count_revision --> writer;
+	critic -.-> count_revision;
+	critic -.-> dispatch_gaps;
+	critic -.-> finalize;
+	critic -.-> human_review;
+	dispatch_gaps -.-> merge;
+	dispatch_gaps -.-> worker;
+	human_review -.-> finalize;
+	human_review -.-> writer;
+	merge --> writer;
+	planner -.-> merge;
+	planner -.-> worker;
+	recall --> planner;
+	worker --> merge;
+	writer --> critic;
+	finalize --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
