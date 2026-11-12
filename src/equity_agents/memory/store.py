@@ -55,9 +55,14 @@ class MemoryStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(path, check_same_thread=False)
         self._db.executescript(SCHEMA)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     # ------------------------------------------------------------------ semantic
+    def _query(self, sql: str, args: tuple | list = ()) -> list[tuple]:
+        """Read under the lock: parallel workers share this SQLite connection."""
+        with self._lock:
+            return self._db.execute(sql, args).fetchall()
+
     @staticmethod
     def fact_key(f: Finding) -> str:
         if f.metric and f.ticker and f.period:
@@ -133,7 +138,7 @@ class MemoryStore:
         sql += " ORDER BY times_confirmed DESC, created DESC LIMIT ?"
         args.append(limit)
         cols = ["ticker", "metric", "period", "value", "unit", "claim", "ref", "times_confirmed"]
-        return [dict(zip(cols, r, strict=True)) for r in self._db.execute(sql, args).fetchall()]
+        return [dict(zip(cols, r, strict=True)) for r in self._query(sql, args)]
 
     # ------------------------------------------------------------------ episodic
     def remember_episode(
@@ -161,9 +166,7 @@ class MemoryStore:
             self._db.commit()
 
     def similar_episodes(self, question: str, k: int = 2, min_score: float = 0.15) -> list[dict]:
-        rows = self._db.execute(
-            "SELECT run_id, question, summary, created FROM episodes"
-        ).fetchall()
+        rows = self._query("SELECT run_id, question, summary, created FROM episodes")
         if not rows:
             return []
         corpus = [f"{r[1]} {r[2]}" for r in rows]
@@ -198,13 +201,11 @@ class MemoryStore:
     def lessons(self, k: int = 5) -> list[str]:
         return [
             r[0]
-            for r in self._db.execute(
-                "SELECT lesson FROM lessons ORDER BY count DESC LIMIT ?", (k,)
-            ).fetchall()
+            for r in self._query("SELECT lesson FROM lessons ORDER BY count DESC LIMIT ?", (k,))
         ]
 
     def stats(self) -> dict[str, int]:
-        q = lambda sql: self._db.execute(sql).fetchone()[0]  # noqa: E731
+        q = lambda sql: self._query(sql)[0][0]  # noqa: E731
         return {
             "facts": q("SELECT count(*) FROM facts WHERE superseded=0"),
             "superseded_facts": q("SELECT count(*) FROM facts WHERE superseded=1"),

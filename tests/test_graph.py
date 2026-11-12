@@ -177,3 +177,34 @@ def test_issue_kinds_map_to_lessons(tmp_path):
     )
     mem.learn_from_review([Issue(kind="missing_citation", detail="z")], "r2")
     assert len(mem.lessons()) == 1
+
+
+def test_memory_is_thread_safe(tmp_path):
+    """Parallel workers read memory concurrently while other nodes write it."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    mem = MemoryStore(tmp_path / "m.sqlite")
+    f = Finding(
+        claim="rev",
+        ticker="NVDA",
+        metric="revenue",
+        period="FY2025",
+        value=1.0,
+        unit="USD",
+        source=Source(kind="xbrl", ref="a"),
+    )
+
+    def work(i):
+        if i % 10 == 0:
+            mem.remember_facts([f.model_copy(update={"period": f"FY{2000 + i}"})], f"r{i}")
+            mem.remember_episode(f"r{i}", "NVIDIA revenue", "summary", ["NVDA"], 0.0, 1)
+        return (
+            len(mem.recall_facts(["NVDA"])),
+            mem.similar_episodes("NVIDIA revenue"),
+            mem.lessons(),
+            mem.stats(),
+        )
+
+    with ThreadPoolExecutor(max_workers=32) as pool:
+        list(pool.map(work, range(1000)))
+    assert mem.stats()["facts"] == 100
