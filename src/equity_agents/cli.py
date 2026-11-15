@@ -121,6 +121,13 @@ def evaluate(
     memory_ablation: Annotated[
         bool, typer.Option(help="Run the cold vs warm memory comparison")
     ] = True,
+    templates: Annotated[
+        str | None,
+        typer.Option(
+            help="Re-run only these question types (comma-separated) and merge them into the "
+            "saved results; other rows, their fault-injection rows and the memory table are kept"
+        ),
+    ] = None,
 ) -> None:
     """Build the eval set from XBRL, run the team, score, fault-inject, write the report."""
     from equity_agents.evals.dataset import build_eval_set, load_eval_set, save_eval_set
@@ -137,6 +144,30 @@ def evaluate(
         db = FinancialsDB(s.resolve(s.tools.xbrl_cache_dir), s.universe.tickers)
         save_eval_set(build_eval_set(db, s.universe.fiscal_years), items_path)
     items = load_eval_set(items_path)[:limit]
+
+    if templates:
+        import pandas as pd
+
+        wanted = {t.strip() for t in templates.split(",")}
+        unknown = wanted - {i.template for i in items}
+        if unknown:
+            raise typer.BadParameter(f"Unknown question types: {sorted(unknown)}")
+        items = [i for i in items if i.template in wanted]
+        old_runs = pd.read_csv(out_dir / "runs.csv")
+        old_faults = pd.read_csv(out_dir / "faults.csv")
+        new = run_items(items, s, MemoryStore(out_dir / "eval_memory.sqlite"), "main")
+        runs = pd.concat([old_runs[~old_runs["template"].isin(wanted)], new], ignore_index=True)
+        kept = old_faults[
+            old_faults["run_id"].isin(runs.loc[~runs["template"].isin(wanted), "run_id"])
+        ]
+        faults = pd.concat(
+            [kept, fault_injection(new, s, use_llm=llm_critic_faults)], ignore_index=True
+        )
+        runs.to_csv(out_dir / "runs.csv", index=False)
+        summarize(runs).to_csv(out_dir / "quality.csv", index=False)
+        faults.to_csv(out_dir / "faults.csv", index=False)
+        console.print(Markdown(report(out_dir)))
+        return
 
     runs = run_items(items, s, MemoryStore(out_dir / "eval_memory.sqlite"), "main")
     runs.to_csv(out_dir / "runs.csv", index=False)

@@ -42,8 +42,9 @@ Rules:
   if the first results are off-topic (at most a few searches).
 - Each finding is one specific, attributable statement: what the company says, in your words,
   with a short verbatim quote (under 30 words) in source.quote and the passage ref in source.ref.
-- Do not report financial figures from text when the task is qualitative; focus on drivers,
-  risks, strategy and management's explanations.
+- Focus on drivers, risks, strategy and management's explanations. If a finding mentions a
+  figure (a growth rate, a segment amount), the figure must appear in its verbatim quote; copy
+  the quote exactly as it appears in the passage, without rewording.
 - If the filings don't address the task, return a single low-confidence finding saying so.
 
 When you have what you need, stop calling tools and say so in one line; you will then
@@ -65,7 +66,9 @@ Rules:
 - Keep the memo under 450 words. Be direct; don't restate the same figure in several sections.
 - Cite finding ids in square brackets after every fact, e.g. "Revenue rose 114% [F3]." Every
   sentence or bullet that contains a number needs a citation, including in the caveats.
-- Every number must appear in a finding (same value, unit and period). Present large USD
+- Every number must appear in a finding: its value, or a figure inside its verbatim quote.
+  Numbers that appear only in a claim's wording, or that you would have to calculate, must be
+  left out. Present large USD
   values in billions with one decimal ("$130.5 billion"), percentages with one decimal.
   If you need a number that no finding contains, leave it out.
 - Do not add a Sources section; it is generated automatically.

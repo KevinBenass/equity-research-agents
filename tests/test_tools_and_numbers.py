@@ -85,3 +85,29 @@ def test_citation_problems():
     memo = "## Summary\nRevenue was $1.0 billion [F1]. Margin was 40.0%.\nSee [F7].\n## Sources\n- [F1] x"
     uncited, unknown = citation_problems(memo, findings)
     assert uncited == ["Margin was 40.0%."] and unknown == ["F7"]
+
+
+def test_figures_in_verified_filing_quotes_are_supported():
+    from equity_agents.agents.worker import verify
+    from equity_agents.numbers import unsupported_numbers
+    from equity_agents.state import Finding, Source
+
+    passage = (
+        '<passage ref="filing:JNJ-10-K-FY2023::s::1">Worldwide sales increased 6.5% to '
+        "$85,159 million, driven by Innovative Medicine.</passage>"
+    )
+
+    def finding(quote):
+        return Finding(
+            claim="Sales growth per management",
+            source=Source(kind="filing", ref="filing:JNJ-10-K-FY2023::s::1", quote=quote),
+        )
+
+    real = finding("Worldwide sales increased 6.5% to $85,159 million")
+    fake = finding("Worldwide sales increased 9.1% to $90,000 million")
+    verify([real, fake], {"filing:JNJ-10-K-FY2023::s::1"}, None, passage)
+    assert real.source.quote_verified and not fake.source.quote_verified
+    memo = "Sales rose 6.5% to $85.2 billion [F1]."
+    assert unsupported_numbers(memo, [real]) == []
+    assert len(unsupported_numbers(memo, [fake])) == 2  # an unverified quote supports nothing
+    assert len(unsupported_numbers("Sales rose 7.5% [F1].", [real])) == 1

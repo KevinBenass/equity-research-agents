@@ -109,7 +109,40 @@ def brief(task: Task, facts: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def verify(findings: list[Finding], seen_refs: set[str], db: FinancialsDB | None) -> list[Finding]:
+def _norm(text: str) -> str:
+    text = text.translate(
+        str.maketrans(
+            {
+                "\u2019": "'",
+                "\u2018": "'",
+                "\u201c": '"',
+                "\u201d": '"',
+                "\u2014": "-",
+                "\u2013": "-",
+                "|": " ",
+            }
+        )
+    )
+    return re.sub(r"\s+", " ", text).strip().lower()
+
+
+def quote_in(quote: str, corpus: str) -> bool:
+    """True if every part of the quote (split at ellipses) appears verbatim in the corpus."""
+    parts = [_norm(p).strip(" .\"'") for p in re.split(r"\.\.\.|…", quote)]
+    parts = [p for p in parts if len(p) >= 8]
+    return bool(parts) and all(p in corpus for p in parts)
+
+
+def verify(
+    findings: list[Finding],
+    seen_refs: set[str],
+    db: FinancialsDB | None,
+    tool_text: str = "",
+) -> list[Finding]:
+    corpus = _norm(tool_text)
+    for f in findings:
+        # A verified quote lets the memo use figures stated in it (see numbers.supported).
+        f.source.quote_verified = bool(f.source.quote) and quote_in(f.source.quote, corpus)
     for f in findings:
         problems = []
         ref = f.source.ref
@@ -157,6 +190,7 @@ def run_worker(
     messages: list[dict[str, Any]] = [{"role": "user", "content": brief(task, facts)}]
     seen_refs: set[str] = {f["ref"] for f in facts}
     called: list[str] = []
+    outputs: list[str] = []  # full tool outputs, kept for quote checks even after compaction
     compacted = 0
     steps = 0
 
@@ -180,6 +214,7 @@ def run_worker(
             else:
                 text, is_error = run_tool(tool, use["input"], llm.tracer, agent, max_chars)
             seen_refs |= set(REF_RE.findall(text))
+            outputs.append(text)
             results.append(
                 {
                     "type": "tool_result",
@@ -230,7 +265,7 @@ def run_worker(
         notes = f"{notes} (context compacted {compacted}x)".strip()
     return WorkerReport(
         task_id=task.id,
-        findings=verify(findings, seen_refs, db),
+        findings=verify(findings, seen_refs, db, "\n".join(outputs)),
         steps=steps,
         tool_calls=called,
         notes=notes,

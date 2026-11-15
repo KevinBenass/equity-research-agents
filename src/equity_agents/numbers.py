@@ -76,7 +76,24 @@ def extract_numbers(text: str) -> list[MemoNumber]:
     return out
 
 
+def _in_quotes(n: MemoNumber, findings: list[Finding]) -> bool:
+    """Figures stated in a quote that code confirmed verbatim in a filing passage."""
+    for f in findings:
+        if not (f.source.quote_verified and f.confidence != "low"):
+            continue
+        for q in extract_numbers(f.source.quote):
+            if q.kind != n.kind and "plain" not in (q.kind, n.kind):
+                continue
+            # Match at the coarser of the two precisions ("$115,186 million" ~ "$115.2 billion").
+            tol = max(n.tolerance, q.tolerance) + 1e-9 * abs(q.value)
+            if abs(abs(n.value) - abs(q.value)) <= tol:
+                return True
+    return False
+
+
 def supported(n: MemoNumber, findings: list[Finding]) -> bool:
+    if _in_quotes(n, findings):
+        return True
     for f in findings:
         if f.value is None:
             continue

@@ -178,3 +178,84 @@ def test_xbrl_queries_are_thread_safe(db):
     with ThreadPoolExecutor(max_workers=16) as pool:
         outs = list(pool.map(lambda _: db.query(sql), range(200)))
     assert len(set(outs)) == 1
+
+
+def test_eval_cli_rerun_of_one_question_type_merges_results(settings, db, monkeypatch, tmp_path):
+    """`era eval --templates X` re-runs only X and keeps every other saved row."""
+    import pandas as pd
+    from typer.testing import CliRunner
+
+    import equity_agents.cli as cli
+    import equity_agents.evals.run as run_mod
+    from equity_agents.evals.dataset import save_eval_set
+
+    out = settings.resolve(settings.paths.eval_dir)
+    out.mkdir(parents=True)
+    q = "How did NVIDIA's revenue change in fiscal 2025 and why?"
+    truth = [TruthNumber(label="rev", value=130_497_000_000, unit="USD")]
+    items = [
+        EvalItem(
+            qid="g1",
+            template="growth",
+            tickers=["NVDA"],
+            requires=["quant"],
+            question=q,
+            truth=truth,
+        ),
+        EvalItem(
+            qid="d1",
+            template="drivers",
+            tickers=["NVDA"],
+            requires=["quant"],
+            question=q,
+            truth=truth,
+        ),
+    ]
+    save_eval_set(items, out / "questions.jsonl")
+    pd.DataFrame(
+        [
+            {
+                "qid": "g1",
+                "template": "growth",
+                "run_id": "old-g1",
+                "verdict": "approve",
+                "numeric_recall": 0.5,
+            },
+            {
+                "qid": "d1",
+                "template": "drivers",
+                "run_id": "old-d1",
+                "verdict": "revise",
+                "numeric_recall": 0.0,
+            },
+        ]
+    ).to_csv(out / "runs.csv", index=False)
+    pd.DataFrame(
+        [
+            {
+                "run_id": "old-g1",
+                "mutation": "drop_citation",
+                "deterministic": True,
+                "with_llm": True,
+                "llm_cost": 0.01,
+            },
+        ]
+    ).to_csv(out / "faults.csv", index=False)
+
+    real_make_deps = run_mod.make_deps
+
+    def fake_make_deps(s, run_id, **kw):
+        kw.setdefault("backend", ScriptedBackend())
+        return real_make_deps(s, run_id, filings_tool=static_filings_tool(PASSAGES), db=db, **kw)
+
+    monkeypatch.setattr(run_mod, "make_deps", fake_make_deps)
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+    monkeypatch.setattr(run_mod, "ROOT", tmp_path)  # don't touch the real README
+    result = CliRunner().invoke(cli.app, ["eval", "--templates", "drivers"])
+    assert result.exit_code == 0, result.output
+    runs = pd.read_csv(out / "runs.csv").set_index("qid")
+    assert runs.loc["g1", "run_id"] == "old-g1" and runs.loc["g1", "numeric_recall"] == 0.5
+    assert runs.loc["d1", "run_id"] != "old-d1" and runs.loc["d1", "numeric_recall"] == 1.0
+    faults = pd.read_csv(out / "faults.csv")
+    assert "old-g1" in set(faults["run_id"]) and len(faults) > 1
+    assert set(pd.read_csv(out / "quality.csv")["template"]) >= {"growth", "drivers"}

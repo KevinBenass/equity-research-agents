@@ -28,6 +28,8 @@ class Source(BaseModel):
     kind: Literal["xbrl", "filing", "calc", "memory"]
     ref: str  # e.g. "xbrl:NVDA:revenue:FY2025", "filing:NVDA-10-K-FY2025::structure::0042"
     quote: str = ""
+    # Set by code, never by the model: the quote was found verbatim in a tool result.
+    quote_verified: bool = False
 
 
 class Finding(BaseModel):
