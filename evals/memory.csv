@@ -1,0 +1,3 @@
+memory,tool_calls,llm_calls,cost_usd,latency_s,numeric_recall
+cold (empty memory),4.833333333333333,9.333333333333334,0.09391666666666666,39.96666666666666,1.0
+warm (after one pass),4.0,8.666666666666666,0.06466666666666666,30.8,1.0

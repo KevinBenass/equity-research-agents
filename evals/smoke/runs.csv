@@ -1,0 +1,5 @@
+qid,template,numeric_recall,all_numbers_correct,n_numbers,unsupported_numbers,citation_coverage,unknown_citations,required_specialists_used,verdict,revisions,research_rounds,n_tasks,llm_calls,tool_calls,tool_errors,cost_usd,latency_s,low_confidence_findings,run_id,run_dir,pass
+growth-NVDA-operating_income-2023,growth,1.0,True,20,0,1.0,0,True,approve,0,0,1,8,6,0,0.0656,37.1,0,eval-smoke-growth-NVDA-operating_income-2023,/Users/kevinbenassuly/equity-research-agents/runs/eval-smoke-growth-NVDA-operating_income-2023,smoke
+margin-MSFT-2025,margin,1.0,True,9,0,1.0,0,True,approve,1,0,1,9,3,0,0.0572,27.1,0,eval-smoke-margin-MSFT-2025,/Users/kevinbenassuly/equity-research-agents/runs/eval-smoke-margin-MSFT-2025,smoke
+compare-AMZN-MSFT-2023,comparison,1.0,True,25,0,1.0,0,True,revise,2,0,3,23,10,1,0.4271,139.1,0,eval-smoke-compare-AMZN-MSFT-2023,/Users/kevinbenassuly/equity-research-agents/runs/eval-smoke-compare-AMZN-MSFT-2023,smoke
+drivers-JNJ-2023,drivers,1.0,True,22,0,0.8888888888888888,0,True,revise,2,0,2,28,18,0,0.6168,190.4,1,eval-smoke-drivers-JNJ-2023,/Users/kevinbenassuly/equity-research-agents/runs/eval-smoke-drivers-JNJ-2023,smoke
