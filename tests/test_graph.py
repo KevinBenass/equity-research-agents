@@ -231,3 +231,22 @@ def test_writer_rewrites_a_memo_cut_off_at_the_token_limit(settings, make):
     backend.create = create
     out = research(QUESTION, settings, run_id="cut", deps=deps)
     assert limits[:2] == [4000, 8000] and "## Risks and caveats" in out.memo
+
+
+def test_trace_command_groups_spans_by_agent(settings, make, monkeypatch):
+    from typer.testing import CliRunner
+
+    import equity_agents.cli as cli
+
+    deps, _ = make("tr")
+    research(QUESTION, settings, run_id="tr", deps=deps)
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+    result = CliRunner().invoke(cli.app, ["trace", "tr"], env={"COLUMNS": "200"})
+    assert result.exit_code == 0, result.output
+    out = result.output
+    quant = out.index("quant_worker[T1]")
+    filings = out.index("filings_worker[T2]")
+    search = out.index("search_filings")
+    # The filings search is listed under the filings worker, not under whichever agent's
+    # span happened to finish just before it.
+    assert (filings < search) and not (quant < search < filings)

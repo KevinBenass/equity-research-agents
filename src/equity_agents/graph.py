@@ -457,9 +457,15 @@ def sources_section(findings: list[Finding]) -> str:
     lines = ["## Sources"]
     for f in findings:
         flag = " *(low confidence)*" if f.confidence == "low" else ""
-        quote = f' — "{f.source.quote[:160]}"' if f.source.quote else ""
+        quote = f' — "{_clip(f.source.quote, 200)}"' if f.source.quote else ""
         lines.append(f"- **[{f.id}]** `{f.source.ref}`{quote}{flag}")
     return "\n".join(lines)
+
+
+def _clip(text: str, n: int) -> str:
+    """Shorten at a word boundary, marking the cut."""
+    text = " ".join(text.split())
+    return text if len(text) <= n else text[:n].rsplit(" ", 1)[0] + " …"
 
 
 def _strip_sources(memo: str) -> str:

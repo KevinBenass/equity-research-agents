@@ -77,16 +77,29 @@ def trace(run_id: str) -> None:
     events = load_trace(run_dir / "trace.jsonl")
     summary = json.loads((run_dir / "summary.json").read_text())
     root = Tree(f"[bold]{summary['question']}")
+    # Spans are written when they finish, so parallel workers interleave in the file.
+    # Group them by agent (in order of first appearance) to show each agent's own steps.
+    by_agent: dict[str, list[dict]] = {}
     for e in events:
-        if e["kind"] == "llm":
-            root.add(
-                f"{e['agent']} · {e['model']} · in {e['input_tokens']} / out {e['output_tokens']} tok · ${e['cost_usd']:.4f} · {e['ms']:.0f} ms"
-            )
-        else:
-            flag = " [red]error" if e.get("is_error") else ""
-            root.add(
-                f"  ↳ {e['name']}({json.dumps(e.get('args', {}))[:80]}) · {e['ms']:.0f} ms{flag}"
-            )
+        by_agent.setdefault(e.get("agent", "?"), []).append(e)
+    for agent, evs in by_agent.items():
+        llm = [e for e in evs if e["kind"] == "llm"]
+        cost = sum(e.get("cost_usd", 0) for e in llm)
+        model = llm[0]["model"] if llm else ""
+        node = root.add(f"[bold]{agent}[/] · {model} · {len(llm)} LLM calls · ${cost:.4f}")
+        step = 0
+        for e in evs:
+            if e["kind"] == "llm":
+                step += 1
+                node.add(
+                    f"step {step} · in {e['input_tokens']} / out {e['output_tokens']} tok · "
+                    f"{e['ms'] / 1000:.1f} s"
+                )
+            else:
+                flag = " [red]error" if e.get("is_error") else ""
+                node.add(
+                    f"  ↳ {e['name']}({json.dumps(e.get('args', {}))[:70]}) · {e['ms']:.0f} ms{flag}"
+                )
     console.print(root)
     table = Table("agent", "calls", "input tok", "output tok", "cost")
     for agent, a in summary["by_agent"].items():

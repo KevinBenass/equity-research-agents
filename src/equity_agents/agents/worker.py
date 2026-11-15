@@ -244,7 +244,7 @@ def run_worker(
             messages=strip_private(messages),
             schema=FINDING_SCHEMA,
             tools=specs,
-            max_tokens=3000,
+            max_tokens=6000,
         )
     except ValueError:
         return WorkerReport(
