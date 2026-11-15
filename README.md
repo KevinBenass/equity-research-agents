@@ -81,6 +81,17 @@ Agent demos are easy; knowing whether the team is right, grounded and worth its 
 
 <!-- RESULTS:END -->
 
+#### What the results show
+
+- **The numbers are right.** Across 24 questions, 96% of ground-truth figures (computed from SEC XBRL, not written by hand) appear in the memo at their displayed precision, and the team used the specialists each question needed every time. 19 of 24 memos were approved by the critic.
+- **The critic needs both layers.** Code checks catch fabricated or perturbed numbers and broken citations, but they can't tell that a memo attributes Microsoft's figures to Alphabet. The LLM review caught every swapped company name, and together they rejected 100% of the 94 corrupted memos.
+- **Memory pays for itself.** Re-asking the same questions with memory from a first pass cut cost by 31% and latency by 23% at the same accuracy: verified facts are recalled instead of re-queried.
+- **"What drove it" questions are the hard case** (2 of 6 approved). They mix XBRL numbers with management's explanations, and the strict number check rejects any figure it can't trace to the database, a calculation, or a quote found verbatim in a filing. Two memos kept figures that appeared only in a researcher's paraphrase. One (J&J, fiscal 2023) used the 6.5% sales growth J&J reports, while the XBRL-derived ground truth is 8.15%: most likely a difference in reporting basis around the Kenvue separation, a real data-definition problem rather than a model error. The critic refused to approve rather than pick one silently.
+
+#### How the evaluation shaped the design
+
+The first full run approved only 4 of 12 comparison and "drivers" memos, although every number in them was correct. Reading the critic's rejections showed why: filing findings carried quotes but no numeric field, so figures management states in the 10-K ("sales increased 6.5%") had nothing to match against. The fix is one general rule, not a per-question patch: a figure is supported if it comes from XBRL, from a calculation the code re-evaluates, or from a quote that code finds verbatim in a passage the search actually returned. Invented or reworded quotes support nothing. Re-running only the affected question types took comparisons from 3/6 to 6/6 approved and drivers from 1/6 to 2/6.
+
 ## Quickstart
 
 ```bash
@@ -126,6 +137,12 @@ src/equity_agents/
 - **Why not one agent with all the tools?** Parallel specialists keep each context small and focused, cut latency on multi-part questions, and let cheap models run the tool loops. The cost is coordination, which the typed handoffs and the critic pay for.
 - **Why deterministic checks before the LLM critic?** "Is this number in the evidence?" has an exact answer; asking a model is slower, costlier and occasionally wrong. The LLM reviews only what code cannot decide.
 - **Why remember facts only from approved runs?** Memory that absorbs unverified numbers compounds errors across runs. Facts are versioned so a correction supersedes rather than silently overwrites.
+
+- **Limitations.** 24 template-generated questions over 8 companies is enough to compare designs, not to claim production accuracy. Claude reviews Claude's work (a different model tier for the critic, plus code checks for everything code can decide). Ground truth covers numbers, not the quality of explanations.
+
+## How this was built
+
+Designed and evaluated by me; implemented with Claude Code. Every result in this README was produced on my machine, and I reviewed the outputs and made the evaluation and design decisions.
 
 ## License
 
