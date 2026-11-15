@@ -21,6 +21,7 @@ class Price(BaseModel):
 class Universe(BaseModel):
     tickers: list[str]
     fiscal_years: list[int]
+    ciks: dict[str, str] = {}
 
 
 class Models(BaseModel):

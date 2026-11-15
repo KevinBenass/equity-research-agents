@@ -30,9 +30,9 @@ flowchart LR
 | Concern | How it is handled | Where |
 |---|---|---|
 | **Orchestration** | LangGraph state machine; parallel fan-out with `Send`, fan-in through an additive reducer; bounded revise and research loops; SQLite checkpointing with `interrupt` for human approval and resume | [`graph.py`](src/equity_agents/graph.py), [`runner.py`](src/equity_agents/runner.py) |
-| **Structured handoffs** | Agents exchange typed `Task`, `Finding` and `Review` objects, never transcripts. The writer may only use findings; every finding carries a source ref | [`state.py`](src/equity_agents/state.py) |
+| **Structured handoffs** | Agents exchange typed `Task`, `Finding` and `Review` objects, never transcripts. The planner, the critic and each worker's final report use **structured outputs** (JSON constrained to a schema by the API), so a handoff can't be malformed. The writer may only use findings; every finding carries a source ref | [`state.py`](src/equity_agents/state.py) |
 | **Context engineering** | Each worker sees only its self-contained brief plus memory facts for its own tickers; tool outputs truncated at the source; per-worker token budget with **observation masking** (old tool results compacted to previews); prompt caching on system prompts and tool definitions | [`agents/worker.py`](src/equity_agents/agents/worker.py), [`llm.py`](src/equity_agents/llm.py) |
-| **Grounding** | Numbers come from SEC XBRL via SQL, arithmetic from a sandboxed calculator. After each worker submits, code checks that every ref was actually returned by a tool, re-reads XBRL values and re-evaluates calculations; failures are downgraded and flagged | [`tools/`](src/equity_agents/tools), `verify()` in [`worker.py`](src/equity_agents/agents/worker.py) |
+| **Grounding** | Numbers come from SEC XBRL via SQL, arithmetic from a sandboxed calculator. After each worker reports, code checks that every cited passage was actually returned by a search, re-reads XBRL values from the database and re-evaluates calculations; failures are downgraded and flagged | [`tools/`](src/equity_agents/tools), `verify()` in [`worker.py`](src/equity_agents/agents/worker.py) |
 | **Review** | The critic runs **deterministic checks first** (every number in the memo must match a verified finding at its displayed precision; every numeric sentence must cite; no unknown citations), then an LLM review for judgment calls (overstated claims, missing evidence → new research tasks). Code failures always block approval | [`numbers.py`](src/equity_agents/numbers.py), `review_memo()` |
 | **Memory** | **Semantic**: verified facts with provenance, versioned on conflict. **Episodic**: past questions and summaries, retrieved by similarity. **Procedural**: lessons distilled from critic reviews, injected into the writer's prompt | [`memory/store.py`](src/equity_agents/memory/store.py) |
 | **Model routing** | Sonnet where judgment matters (planning, writing, reviewing), Haiku for tool loops | [`configs/default.yaml`](configs/default.yaml) |
@@ -69,6 +69,7 @@ uv run era ask "Compare Microsoft's and Alphabet's operating margins in fiscal 2
 uv run era resume <run_id> --approve
 uv run era trace <run_id>     # span tree with per-agent tokens and cost
 uv run era memory             # what the team has learned
+make smoke                    # one question per type on the real API (~$0.50); stops at the first error
 make eval                     # full evaluation (~$5-10 in API usage)
 ```
 
@@ -76,7 +77,7 @@ Without filings-copilot running, quantitative questions still work; the filings 
 
 ## Tests
 
-`make test` runs the real graph, tool loop, grounding checks, critic routing, memory and human-in-the-loop resume against a **scripted Claude backend** and an XBRL fixture in SEC's format. No network, no API key; CI runs it on every push.
+`make test` also checks every request against the API's rules (structured-output schema limits, no forced tool calls, alternating roles, tool definitions present when the history has tool calls, parameters accepted by the installed SDK), so a paid run doesn't fail on a malformed request. It runs the real graph, tool loop, grounding checks, critic routing, memory and human-in-the-loop resume against a **scripted Claude backend** and an XBRL fixture in SEC's format. No network, no API key; CI runs it on every push.
 
 ## Repository layout
 

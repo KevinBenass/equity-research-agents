@@ -61,6 +61,59 @@ class LLM:
             self._backend = AnthropicBackend()
         return self._backend
 
+    _tool_choice_none_unsupported = False
+
+    def structured(
+        self,
+        *,
+        agent: str,
+        model: str,
+        system: str,
+        messages: list[dict[str, Any]],
+        schema: dict[str, Any],
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int = 2048,
+    ) -> dict[str, Any]:
+        """A reply constrained to ``schema``, parsed. Retries once with more room if cut off.
+
+        ``tools`` is only needed when ``messages`` contain earlier tool calls (the API requires
+        their definitions); tool use is then disabled for this reply.
+        """
+        for room in (max_tokens, max_tokens * 3):
+            try:
+                resp = self.call(
+                    agent=agent,
+                    model=model,
+                    system=system,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice={"type": "none"} if tools else None,
+                    output_schema=schema,
+                    max_tokens=room,
+                )
+            except Exception as exc:  # only a tool_choice rejection is handled; others re-raise
+                if tools and "tool_choice" in str(exc) and not LLM._tool_choice_none_unsupported:
+                    LLM._tool_choice_none_unsupported = True  # this model rejects "none": omit it
+                    resp = self.call(
+                        agent=agent,
+                        model=model,
+                        system=system,
+                        messages=messages,
+                        tools=tools,
+                        output_schema=schema,
+                        max_tokens=room,
+                    )
+                else:
+                    raise
+            if resp.get("stop_reason") in ("max_tokens", "refusal"):
+                continue
+            text = text_of(resp)
+            try:
+                return json.loads(text)
+            except ValueError:
+                return parse_json(text)
+        raise ValueError(f"{agent}: structured reply incomplete after retry")
+
     def cost(self, model: str, usage: dict[str, int]) -> float:
         p = self.prices.get(model)
         if not p:
@@ -81,6 +134,7 @@ class LLM:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         tool_choice: dict[str, Any] | None = None,
+        output_schema: dict[str, Any] | None = None,
         max_tokens: int = 2048,
     ) -> dict[str, Any]:
         # Cache breakpoints on the static prefix (system prompt and tool definitions),
@@ -95,8 +149,14 @@ class LLM:
             tools = [dict(t) for t in tools]
             tools[-1] = {**tools[-1], "cache_control": {"type": "ephemeral"}}
             request["tools"] = tools
-        if tool_choice:
+        if tool_choice and not (
+            tool_choice.get("type") == "none" and self._tool_choice_none_unsupported
+        ):
             request["tool_choice"] = tool_choice
+        if output_schema:
+            # Structured outputs: the reply is JSON constrained to the schema. Forcing a tool
+            # call (tool_choice "tool"/"any") is not supported on every model; this is.
+            request["output_config"] = {"format": {"type": "json_schema", "schema": output_schema}}
         with self.tracer.span(f"{agent}.llm", "llm", agent=agent, model=model) as rec:
             resp = self.backend.create(**request)
             u = resp["usage"]
@@ -110,6 +170,14 @@ class LLM:
         return resp
 
 
+def assistant_content(resp: dict[str, Any]) -> list[dict[str, Any]]:
+    """Assistant blocks to append to the history; empty text blocks are rejected by the API."""
+    blocks = [
+        b for b in resp["content"] if not (b["type"] == "text" and not b.get("text", "").strip())
+    ]
+    return blocks or [{"type": "text", "text": "(no output)"}]
+
+
 def text_of(resp: dict[str, Any]) -> str:
     return "".join(b["text"] for b in resp["content"] if b["type"] == "text")
 
@@ -120,7 +188,7 @@ def parse_json(text: str) -> Any:
     starts = [i for i in (candidate.find("{"), candidate.find("[")) if i != -1]
     if not starts:
         raise ValueError(f"No JSON in output: {text[:200]!r}")
-    obj, _ = json.JSONDecoder().raw_decode(candidate[min(starts) :])
+    obj, _ = json.JSONDecoder(strict=False).raw_decode(candidate[min(starts) :])
     return obj
 
 

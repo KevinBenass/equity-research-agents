@@ -5,9 +5,10 @@ Context engineering lives here:
   own tickers, never the full conversation of the team.
 - Tool outputs are truncated at the source and, once the worker's history exceeds its token
   budget, older tool results are compacted to one-line previews (observation masking).
-- The output is structured (``submit_findings``), so the handoff is data, not prose.
+- The loop ends with one structured-output call (JSON constrained to ``FINDING_SCHEMA``), so
+  the handoff is data, not prose.
 
-Grounding checks run in code after the model submits:
+Grounding checks run in code after the findings are returned:
 - A finding's source ref must have appeared in a tool result during this loop.
 - XBRL findings are re-checked against the database; calc findings are re-evaluated.
 Findings failing a check are kept but downgraded to low confidence and annotated, so the
@@ -20,12 +21,20 @@ import json
 import re
 from typing import Any
 
-from equity_agents.llm import LLM, compact_history, estimate_tokens, strip_private
+from equity_agents.llm import (
+    LLM,
+    assistant_content,
+    compact_history,
+    estimate_tokens,
+    strip_private,
+)
 from equity_agents.state import Finding, Task, WorkerReport
 from equity_agents.tools.base import Tool, run_tool
 from equity_agents.tools.calc import safe_eval
 from equity_agents.tools.xbrl import FinancialsDB
 
+# Structured-output schema: every object closes additionalProperties and requires all its
+# fields (the API's rule). Not-applicable strings are "" and a missing value is null.
 FINDING_SCHEMA = {
     "type": "object",
     "properties": {
@@ -37,7 +46,7 @@ FINDING_SCHEMA = {
                     "claim": {"type": "string"},
                     "ticker": {"type": "string"},
                     "metric": {"type": "string"},
-                    "value": {"type": "number"},
+                    "value": {"type": ["number", "null"]},
                     "unit": {"type": "string"},
                     "period": {"type": "string", "description": "e.g. FY2025"},
                     "source": {
@@ -50,11 +59,22 @@ FINDING_SCHEMA = {
                             "ref": {"type": "string"},
                             "quote": {"type": "string"},
                         },
-                        "required": ["kind", "ref"],
+                        "required": ["kind", "ref", "quote"],
+                        "additionalProperties": False,
                     },
                     "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
                 },
-                "required": ["claim", "source"],
+                "required": [
+                    "claim",
+                    "ticker",
+                    "metric",
+                    "value",
+                    "unit",
+                    "period",
+                    "source",
+                    "confidence",
+                ],
+                "additionalProperties": False,
             },
         },
         "notes": {
@@ -62,13 +82,13 @@ FINDING_SCHEMA = {
             "description": "Anything the lead analyst should know (gaps, caveats).",
         },
     },
-    "required": ["findings"],
+    "required": ["findings", "notes"],
+    "additionalProperties": False,
 }
-SUBMIT = {
-    "name": "submit_findings",
-    "description": "Return your findings. Call once, at the end.",
-    "input_schema": FINDING_SCHEMA,
-}
+REPORT_PROMPT = (
+    "Now report your findings for the task, using only what the tools returned above. "
+    'Use "" for fields that do not apply and null for value when there is no number.'
+)
 REF_RE = re.compile(r"\b((?:xbrl|filing):[\w.\-:]+)")
 
 
@@ -93,7 +113,11 @@ def verify(findings: list[Finding], seen_refs: set[str], db: FinancialsDB | None
     for f in findings:
         problems = []
         ref = f.source.ref
-        if f.source.kind in ("xbrl", "filing") and ref not in seen_refs:
+        # Filing passages can only be cited if a search returned them. XBRL values are checked
+        # against the database below, which is stricter than "the ref was seen".
+        if f.source.kind == "filing" and ref not in seen_refs:
+            problems.append("source ref never returned by a tool")
+        if f.source.kind == "xbrl" and db is None and ref not in seen_refs:
             problems.append("source ref never returned by a tool")
         if f.source.kind == "xbrl" and db is not None and f.value is not None:
             m = re.match(r"xbrl:(\w+):(\w+):FY(\d{4})", ref)
@@ -129,49 +153,26 @@ def run_worker(
 ) -> WorkerReport:
     agent = f"{task.kind}_worker[{task.id}]"
     by_name = {t.name: t for t in tools}
-    specs = [t.spec() for t in tools] + [SUBMIT]
+    specs = [t.spec() for t in tools]
     messages: list[dict[str, Any]] = [{"role": "user", "content": brief(task, facts)}]
     seen_refs: set[str] = {f["ref"] for f in facts}
     called: list[str] = []
     compacted = 0
+    steps = 0
 
+    # 1) Research: a plain tool loop. It ends when the model stops calling tools or at the
+    #    step limit; either way the findings are then requested in a structured reply.
     for step in range(1, max_steps + 1):
-        force = step == max_steps
+        steps = step
         resp = llm.call(
-            agent=agent,
-            model=model,
-            system=system,
-            messages=strip_private(messages),
-            tools=specs,
-            tool_choice={"type": "tool", "name": "submit_findings"} if force else None,
+            agent=agent, model=model, system=system, messages=strip_private(messages), tools=specs
         )
-        messages.append({"role": "assistant", "content": resp["content"]})
+        messages.append({"role": "assistant", "content": assistant_content(resp)})
         uses = [b for b in resp["content"] if b["type"] == "tool_use"]
         if not uses:
-            messages.append(
-                {"role": "user", "content": "Call submit_findings with your findings now."}
-            )
-            continue
+            break
         results = []
         for use in uses:
-            if use["name"] == "submit_findings":
-                raw = use["input"].get("findings", [])
-                findings = []
-                for item in raw:
-                    try:
-                        findings.append(Finding.model_validate({**item, "task_id": task.id}))
-                    except ValueError:
-                        continue
-                notes = use["input"].get("notes", "")
-                if compacted:
-                    notes = f"{notes} (context compacted {compacted}x)".strip()
-                return WorkerReport(
-                    task_id=task.id,
-                    findings=verify(findings, seen_refs, db),
-                    steps=step,
-                    tool_calls=called,
-                    notes=notes,
-                )
             called.append(use["name"])
             tool = by_name.get(use["name"])
             if tool is None:
@@ -191,13 +192,60 @@ def run_worker(
         if estimate_tokens(messages) > budget_tokens:
             compacted += compact_history(messages, keep_recent)
 
+    # 2) Report: one structured reply. The request ends with a user turn; when the last turn
+    #    is tool results, the instruction is appended to it (roles must alternate).
+    if messages[-1]["role"] == "user":
+        messages[-1] = {
+            **messages[-1],
+            "content": list(messages[-1]["content"]) + [{"type": "text", "text": REPORT_PROMPT}],
+        }
+    else:
+        messages.append({"role": "user", "content": REPORT_PROMPT})
+    try:
+        out = llm.structured(
+            agent=agent,
+            model=model,
+            system=system,
+            messages=strip_private(messages),
+            schema=FINDING_SCHEMA,
+            tools=specs,
+            max_tokens=3000,
+        )
+    except ValueError:
+        return WorkerReport(
+            task_id=task.id,
+            findings=[],
+            steps=steps,
+            tool_calls=called,
+            notes="Worker did not return a complete findings report.",
+        )
+    findings = []
+    for item in out.get("findings", []):
+        try:
+            findings.append(Finding.model_validate({**_blank_to_none(item), "task_id": task.id}))
+        except ValueError:
+            continue
+    notes = out.get("notes", "")
+    if compacted:
+        notes = f"{notes} (context compacted {compacted}x)".strip()
     return WorkerReport(
         task_id=task.id,
-        findings=[],
-        steps=max_steps,
+        findings=verify(findings, seen_refs, db),
+        steps=steps,
         tool_calls=called,
-        notes="Worker hit the step limit without submitting findings.",
+        notes=notes,
     )
+
+
+def _blank_to_none(item: dict[str, Any]) -> dict[str, Any]:
+    """The schema asks for "" when a field does not apply; the data model uses None."""
+    out = {
+        k: (None if v == "" and k in ("ticker", "metric", "unit", "period") else v)
+        for k, v in item.items()
+    }
+    if out.get("confidence") in (None, ""):
+        out.pop("confidence", None)
+    return out
 
 
 def findings_digest(findings: list[Finding]) -> str:

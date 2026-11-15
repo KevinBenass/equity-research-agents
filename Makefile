@@ -1,4 +1,4 @@
-.PHONY: setup data eval test lint diagram
+.PHONY: setup data smoke eval test lint diagram
 
 UV ?= uv
 RUN = $(UV) run --env-file .env
@@ -9,6 +9,9 @@ setup:    ## Install dependencies and create .env
 
 data:     ## Download SEC XBRL company facts
 	$(RUN) era data
+
+smoke:    ## Cheap end-to-end check on the real API (one question per type) before `make eval`
+	$(RUN) era smoke
 
 eval:     ## Run the evaluation suite and update the README results
 	$(RUN) era eval

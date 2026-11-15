@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from datetime import date
 from pathlib import Path
 
@@ -70,7 +71,9 @@ TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
 
 
-def download_facts(tickers: list[str], cache_dir: Path, user_agent: str) -> None:
+def download_facts(
+    tickers: list[str], cache_dir: Path, user_agent: str, ciks: dict[str, str] | None = None
+) -> None:
     cache_dir.mkdir(parents=True, exist_ok=True)
     missing = [t for t in tickers if not (cache_dir / f"{t}.json").exists()]
     if not missing:
@@ -80,11 +83,13 @@ def download_facts(tickers: list[str], cache_dir: Path, user_agent: str) -> None
     with httpx.Client(
         headers={"User-Agent": user_agent}, timeout=60, follow_redirects=True
     ) as client:
-        cik_map = {
-            r["ticker"].upper(): str(r["cik_str"]).zfill(10)
-            for r in client.get(TICKERS_URL).json().values()
-        }
+        cik_map = {t: str(c).zfill(10) for t, c in (ciks or {}).items()}
+        if any(t not in cik_map for t in missing):
+            for r in client.get(TICKERS_URL).json().values():
+                cik_map.setdefault(r["ticker"].upper(), str(r["cik_str"]).zfill(10))
         for t in missing:
+            if t not in cik_map:
+                raise ValueError(f"No SEC CIK for {t}; add it to universe.ciks in the config.")
             resp = client.get(FACTS_URL.format(cik=cik_map[t]))
             resp.raise_for_status()
             (cache_dir / f"{t}.json").write_text(resp.text)
@@ -159,6 +164,9 @@ class FinancialsDB:
         self.row_limit = row_limit
         self.con = duckdb.connect()
         self.con.register("financials", self.df)
+        # Quant workers run in parallel threads and share this connection; DuckDB
+        # connections are not safe for concurrent use, so queries are serialized.
+        self._lock = threading.Lock()
 
     def get(self, ticker: str, metric: str, fiscal_year: int) -> float | None:
         m = self.df[
@@ -208,7 +216,8 @@ class FinancialsDB:
         if re.search(r"(?i)read_\w+\s*\(|\bhttp", cleaned):
             raise ToolError("External reads are not allowed; query the `financials` table.")
         try:
-            df = self.con.execute(f"SELECT * FROM ({cleaned}) LIMIT {self.row_limit}").df()
+            with self._lock:
+                df = self.con.execute(f"SELECT * FROM ({cleaned}) LIMIT {self.row_limit}").df()
         except duckdb.Error as exc:
             raise ToolError(f"SQL error: {exc}") from exc
         return df.to_csv(index=False) if len(df) else "(no rows)"

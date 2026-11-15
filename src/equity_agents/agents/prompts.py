@@ -19,7 +19,7 @@ Rules:
 - Coverage: tickers {tickers}; fiscal years {years}. If the question is outside this coverage,
   plan what is possible and say what is not in the rationale.
 
-Call submit_plan exactly once."""
+Reply in the required JSON format."""
 
 QUANT = """You are a quantitative analyst. Answer the task using the financial data tools.
 
@@ -32,7 +32,8 @@ Rules:
 - If data is missing, say so in a finding with confidence "low" rather than guessing.
 - Be efficient: one get_metric call can return several years.
 
-Finish by calling submit_findings once."""
+When you have what you need, stop calling tools and say so in one line; you will then
+be asked for your findings in a structured format."""
 
 FILINGS = """You are a filings researcher. Answer the task from the text of 10-K reports.
 
@@ -45,7 +46,8 @@ Rules:
   risks, strategy and management's explanations.
 - If the filings don't address the task, return a single low-confidence finding saying so.
 
-Finish by calling submit_findings once."""
+When you have what you need, stop calling tools and say so in one line; you will then
+be asked for your findings in a structured format."""
 
 WRITER = """You are the writer on an equity research team. Write a concise research memo that
 answers the client question using ONLY the findings provided.
@@ -81,4 +83,4 @@ Your job is the judgment the automated checks cannot make:
   and fiscal year, tickers, fiscal_years). Do not request research for nice-to-haves.
 
 Verdict: "approve" if there are no material problems (automated or yours); "research_more"
-if evidence is missing; otherwise "revise". Call submit_review once."""
+if evidence is missing; otherwise "revise". Reply in the required JSON format."""

@@ -68,65 +68,53 @@ class Deps:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
-PLAN_TOOL = {
-    "name": "submit_plan",
-    "description": "Submit the research plan.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "rationale": {"type": "string"},
-            "tasks": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "kind": {"type": "string", "enum": ["quant", "filings"]},
-                        "instruction": {"type": "string"},
-                        "tickers": {"type": "array", "items": {"type": "string"}},
-                        "fiscal_years": {"type": "array", "items": {"type": "integer"}},
+# Structured-output schemas (output_config.format). The API requires every object to set
+# additionalProperties false and list all its properties as required; no length constraints.
+TASK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "kind": {"type": "string", "enum": ["quant", "filings"]},
+        "instruction": {"type": "string"},
+        "tickers": {"type": "array", "items": {"type": "string"}},
+        "fiscal_years": {"type": "array", "items": {"type": "integer"}},
+    },
+    "required": ["kind", "instruction", "tickers", "fiscal_years"],
+    "additionalProperties": False,
+}
+PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "rationale": {"type": "string"},
+        "tasks": {"type": "array", "items": TASK_SCHEMA},
+    },
+    "required": ["rationale", "tasks"],
+    "additionalProperties": False,
+}
+REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string", "enum": ["approve", "revise", "research_more"]},
+        "issues": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["unsupported_claim", "missing_evidence", "other"],
                     },
-                    "required": ["kind", "instruction"],
+                    "detail": {"type": "string"},
+                    "excerpt": {"type": "string"},
                 },
+                "required": ["kind", "detail", "excerpt"],
+                "additionalProperties": False,
             },
         },
-        "required": ["rationale", "tasks"],
+        "gap_tasks": {"type": "array", "items": TASK_SCHEMA},
     },
+    "required": ["verdict", "issues", "gap_tasks"],
+    "additionalProperties": False,
 }
-
-REVIEW_TOOL = {
-    "name": "submit_review",
-    "description": "Submit the review.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "verdict": {"type": "string", "enum": ["approve", "revise", "research_more"]},
-            "issues": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "kind": {
-                            "type": "string",
-                            "enum": ["unsupported_claim", "missing_evidence", "other"],
-                        },
-                        "detail": {"type": "string"},
-                        "excerpt": {"type": "string"},
-                    },
-                    "required": ["kind", "detail"],
-                },
-            },
-            "gap_tasks": PLAN_TOOL["input_schema"]["properties"]["tasks"],
-        },
-        "required": ["verdict"],
-    },
-}
-
-
-def _tool_input(resp: dict[str, Any], name: str) -> dict[str, Any]:
-    for b in resp["content"]:
-        if b["type"] == "tool_use" and b["name"] == name:
-            return b["input"]
-    raise ValueError(f"Model did not call {name}")
 
 
 def build_graph(deps: Deps, checkpointer: Any = None):
@@ -175,16 +163,14 @@ def build_graph(deps: Deps, checkpointer: Any = None):
         user = f"Client question: {state['question']}"
         if state.get("memory_context"):
             user += f"\n\n{state['memory_context']}"
-        resp = llm.call(
+        plan = llm.structured(
             agent="planner",
             model=s.models.planner,
             system=system,
             messages=[{"role": "user", "content": user}],
-            tools=[PLAN_TOOL],
-            tool_choice={"type": "tool", "name": "submit_plan"},
+            schema=PLAN_SCHEMA,
             max_tokens=1500,
         )
-        plan = _tool_input(resp, "submit_plan")
         return {
             "tasks": make_tasks(plan.get("tasks", []), "T"),
             "plan_rationale": plan.get("rationale", ""),
@@ -432,7 +418,7 @@ def review_memo(
         return Review(verdict="revise" if auto else "approve", issues=auto)
     s, llm = deps.settings, deps.llm
     auto_text = "\n".join(f"- [{i.kind}] {i.detail} | {i.excerpt}" for i in auto) or "(none)"
-    resp = llm.call(
+    out = llm.structured(
         agent="critic",
         model=s.models.critic,
         system=prompts.CRITIC.format(auto_issues=auto_text),
@@ -443,11 +429,9 @@ def review_memo(
                 f"{findings_digest(findings)}\n\nDraft memo:\n{_strip_sources(memo)}",
             }
         ],
-        tools=[REVIEW_TOOL],
-        tool_choice={"type": "tool", "name": "submit_review"},
+        schema=REVIEW_SCHEMA,
         max_tokens=1500,
     )
-    out = _tool_input(resp, "submit_review")
     llm_issues = [
         Issue(**i)
         for i in out.get("issues", [])

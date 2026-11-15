@@ -26,9 +26,21 @@ START, END = "<!-- RESULTS:START -->", "<!-- RESULTS:END -->"
 
 
 def run_items(
-    items: list[EvalItem], settings: Settings, memory: MemoryStore, label: str, **dep_kwargs
+    items: list[EvalItem],
+    settings: Settings,
+    memory: MemoryStore,
+    label: str,
+    fail_fast: bool = False,
+    **dep_kwargs,
 ) -> pd.DataFrame:
+    """Run the team on each item and score it.
+
+    A failed run is recorded and skipped, but if the first runs all fail the problem is
+    systematic (API key, model access, a bad request), so the eval stops instead of paying
+    for the rest. ``fail_fast`` stops at the first failure (used by the smoke test).
+    """
     rows = []
+    failures = 0
     for i, item in enumerate(items, 1):
         console.rule(f"[{label}] {i}/{len(items)} {item.qid}")
         run_id = f"eval-{label}-{item.qid}"[:80]
@@ -38,6 +50,11 @@ def run_items(
             out = research(item.question, settings, run_id=run_id, deps=deps)
         except Exception as exc:
             console.print(f"[red]run failed: {exc}")
+            failures += 1
+            if fail_fast or (failures == i and i >= 2):
+                raise RuntimeError(
+                    f"Stopping the eval: {failures} run(s) failed, last: {exc}"
+                ) from exc
             rows.append(
                 {"qid": item.qid, "template": item.template, "error": str(exc), "pass": label}
             )

@@ -1,6 +1,9 @@
 universe:
   # Same coverage as filings-copilot so the two projects share a corpus.
   tickers: [AAPL, MSFT, NVDA, AMZN, GOOGL, JPM, JNJ, XOM]
+  # SEC CIKs, so downloads don't depend on the ticker lookup file (it has missed XOM).
+  ciks: {AAPL: "0000320193", MSFT: "0000789019", NVDA: "0001045810", AMZN: "0001018724",
+         GOOGL: "0001652044", JPM: "0000019617", JNJ: "0000200406", XOM: "0000034088"}
   fiscal_years: [2022, 2023, 2024, 2025]
 
 models:

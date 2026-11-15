@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import io
+import itertools
 import json
 import re
 from pathlib import Path
@@ -140,6 +141,33 @@ def _text(t: str) -> dict:
     }
 
 
+def _json(obj: dict) -> dict:
+    """A structured-output reply: the JSON comes back as the text block."""
+    return _text(json.dumps(obj))
+
+
+def check_request(req: dict[str, Any]) -> None:
+    """Rules the real API enforces, so a test fails where production would get a 400."""
+    choice = (req.get("tool_choice") or {}).get("type")
+    assert choice not in ("tool", "any"), "forced tool calls are unsupported on this model"
+    if choice == "none" or "output_config" in req:
+        assert "tool_choice" not in req or choice in ("none", "auto")
+    msgs = req["messages"]
+    assert msgs[0]["role"] == "user" and msgs[-1]["role"] == "user"
+    for a, b in itertools.pairwise(msgs):
+        assert a["role"] != b["role"], "roles must alternate"
+    uses_tools = any(
+        isinstance(m["content"], list) and any(x.get("type") == "tool_use" for x in m["content"])
+        for m in msgs
+    )
+    assert not uses_tools or req.get("tools"), "tool_use history requires tool definitions"
+    for m in msgs:
+        if isinstance(m["content"], list):
+            for x in m["content"]:
+                assert not (x.get("type") == "text" and not x["text"].strip()), "empty text block"
+                assert not any(k.startswith("_") for k in x), "private key sent to the API"
+
+
 class ScriptedBackend:
     """Plays every role for the question 'How did NVIDIA's revenue change in fiscal 2025 and why?'."""
 
@@ -157,11 +185,13 @@ class ScriptedBackend:
 
     def create(self, **req: Any) -> dict[str, Any]:
         self.requests.append(req)
+        check_request(req)
         system = req["system"][0]["text"]
         msgs = req["messages"]
+        structured = "output_config" in req
         if "lead analyst" in system:
-            return _use(
-                "submit_plan",
+            assert structured
+            return _json(
                 {
                     "rationale": "Numbers from XBRL, explanation from the 10-K.",
                     "tasks": [
@@ -194,14 +224,15 @@ class ScriptedBackend:
                     {"expression": f"({rows[2025]} - {rows[2024]}) / {rows[2024]} * 100"},
                     1,
                 )
+            if not structured:
+                return _text("I have the reported values and the growth rate.")
             rows = {
                 int(r["fiscal_year"]): (float(r["value"]), r["ref"]) for r in _csv_rows(results[0])
             }
             growth = float(results[1])
             expr = f"({rows[2025][0]} - {rows[2024][0]}) / {rows[2024][0]} * 100"
             v25 = rows[2025][0] * (1.1 if self.quant_lies else 1)
-            return _use(
-                "submit_findings",
+            return _json(
                 {
                     "findings": [
                         {
@@ -231,9 +262,9 @@ class ScriptedBackend:
                             "period": "FY2025",
                             "source": {"kind": "calc", "ref": f"calc:{expr}"},
                         },
-                    ]
-                },
-                2,
+                    ],
+                    "notes": "",
+                }
             )
         if "filings researcher" in system:
             results = _tool_results(msgs)
@@ -241,9 +272,10 @@ class ScriptedBackend:
                 return _use(
                     "search_filings", {"query": "NVIDIA fiscal 2025 revenue growth drivers"}
                 )
+            if not structured:
+                return _text("Found the explanation in MD&A.")
             ref = re.search(r'ref="([^"]+)"', results[0]).group(1)
-            return _use(
-                "submit_findings",
+            return _json(
                 {
                     "findings": [
                         {
@@ -255,9 +287,9 @@ class ScriptedBackend:
                                 "quote": "Revenue growth was driven by Data Center",
                             },
                         },
-                    ]
-                },
-                1,
+                    ],
+                    "notes": "",
+                }
             )
         if "writer on an equity" in system:
             self.writer_calls += 1
@@ -284,5 +316,6 @@ class ScriptedBackend:
                 "## Risks and caveats\nThe explanation rests on management's own account in the 10-K."
             )
         if "reviewer on an equity" in system:
-            return _use("submit_review", {"verdict": self.critic_verdict, "issues": []})
+            assert structured
+            return _json({"verdict": self.critic_verdict, "issues": [], "gap_tasks": []})
         raise AssertionError(f"Unexpected system prompt: {system[:80]}")

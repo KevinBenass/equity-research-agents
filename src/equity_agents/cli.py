@@ -25,7 +25,7 @@ def data() -> None:
 
     s = load_settings()
     cache = s.resolve(s.tools.xbrl_cache_dir)
-    download_facts(s.universe.tickers, cache, s.sec_user_agent)
+    download_facts(s.universe.tickers, cache, s.sec_user_agent, s.universe.ciks)
     db = FinancialsDB(cache, s.universe.tickers)
     console.print(db.df.groupby("ticker")["metric"].nunique().rename("metrics").to_frame())
 
@@ -146,6 +146,47 @@ def evaluate(
         subset = [i for i in items if i.template in ("growth", "margin")][:6]
         _mem_ablation(subset, s, out_dir).to_csv(out_dir / "memory.csv", index=False)
     console.print(Markdown(report(out_dir)))
+
+
+@app.command()
+def smoke() -> None:
+    """Cheap end-to-end check before the full eval: one question per type (about $0.50).
+
+    Runs against the real API, stops at the first error, and writes to <eval_dir>/smoke so
+    the full results and the README are untouched.
+    """
+    from equity_agents.evals.dataset import build_eval_set, load_eval_set, save_eval_set
+    from equity_agents.evals.run import fault_injection, run_items, summarize
+    from equity_agents.memory.store import MemoryStore
+    from equity_agents.tools.xbrl import FinancialsDB
+
+    s = load_settings()
+    eval_dir = s.resolve(s.paths.eval_dir)
+    eval_dir.mkdir(parents=True, exist_ok=True)
+    items_path = eval_dir / "questions.jsonl"
+    if not items_path.exists():
+        db = FinancialsDB(s.resolve(s.tools.xbrl_cache_dir), s.universe.tickers)
+        save_eval_set(build_eval_set(db, s.universe.fiscal_years), items_path)
+    items, seen = [], set()
+    for item in load_eval_set(items_path):
+        if item.template not in seen:
+            seen.add(item.template)
+            items.append(item)
+    out_dir = eval_dir / "smoke"
+    out_dir.mkdir(exist_ok=True)
+    memory_path = out_dir / "memory.sqlite"
+    memory_path.unlink(missing_ok=True)
+    runs = run_items(items, s, MemoryStore(memory_path), "smoke", fail_fast=True)
+    runs.to_csv(out_dir / "runs.csv", index=False)
+    console.print(summarize(runs).to_markdown(index=False))
+    faults = fault_injection(runs, s, use_llm=True)  # exercises the LLM critic path too
+    if len(faults):
+        console.print(
+            f"Fault injection: {len(faults)} corrupted memos, "
+            f"{faults['with_llm'].mean():.0%} rejected by code + LLM review"
+        )
+    total = runs["cost_usd"].sum() + (faults["llm_cost"].sum() if len(faults) else 0.0)
+    console.print(f"[green]Smoke test passed[/] · {len(runs)} questions · ${total:.2f}")
 
 
 @app.command("eval-report")

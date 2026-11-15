@@ -1,4 +1,4 @@
-from fakes import PASSAGES, ScriptedBackend
+from fakes import PASSAGES, ScriptedBackend, _json, _text, check_request
 
 from equity_agents.agents.worker import run_worker
 from equity_agents.evals.dataset import EvalItem, TruthNumber, build_eval_set
@@ -38,32 +38,48 @@ def test_truth_matching_respects_display_precision():
 
 def test_worker_downgrades_findings_with_unseen_refs(settings, db):
     class Liar(ScriptedBackend):
+        """Reports a wrong XBRL value and cites a filing passage no tool ever returned."""
+
         def create(self, **req):
             self.requests.append(req)
-            return {
-                "content": [
-                    {
-                        "type": "tool_use",
-                        "id": "t1",
-                        "name": "submit_findings",
-                        "input": {
-                            "findings": [
-                                {
-                                    "claim": "Revenue",
-                                    "ticker": "NVDA",
-                                    "metric": "revenue",
-                                    "value": 1.0,
-                                    "unit": "USD",
-                                    "period": "FY2025",
-                                    "source": {"kind": "xbrl", "ref": "xbrl:NVDA:revenue:FY2025"},
-                                }
-                            ]
+            check_request(req)
+            if "output_config" not in req:
+                return _text("Done.")  # no research at all
+            return _json(
+                {
+                    "findings": [
+                        {
+                            "claim": "Revenue",
+                            "ticker": "NVDA",
+                            "metric": "revenue",
+                            "value": 1.0,
+                            "unit": "USD",
+                            "period": "FY2025",
+                            "source": {
+                                "kind": "xbrl",
+                                "ref": "xbrl:NVDA:revenue:FY2025",
+                                "quote": "",
+                            },
+                            "confidence": "high",
                         },
-                    }
-                ],
-                "stop_reason": "tool_use",
-                "usage": {"input_tokens": 10, "output_tokens": 10},
-            }
+                        {
+                            "claim": "Demand was strong",
+                            "ticker": "NVDA",
+                            "metric": "",
+                            "value": None,
+                            "unit": "",
+                            "period": "",
+                            "source": {
+                                "kind": "filing",
+                                "ref": "filing:NVDA-10-K-FY2025::x::9",
+                                "quote": "",
+                            },
+                            "confidence": "high",
+                        },
+                    ],
+                    "notes": "",
+                }
+            )
 
     llm = LLM(settings.models.prices, Tracer("w"), Liar())
     report_ = run_worker(
@@ -79,12 +95,10 @@ def test_worker_downgrades_findings_with_unseen_refs(settings, db):
         max_chars=2000,
         db=db,
     )
-    f = report_.findings[0]
-    assert (
-        f.confidence == "low"
-        and "never returned by a tool" in f.claim
-        and "does not match XBRL" in f.claim
-    )
+    xbrl, filing = report_.findings
+    assert xbrl.confidence == "low" and "does not match XBRL" in xbrl.claim
+    assert filing.confidence == "low" and "never returned by a tool" in filing.claim
+    assert filing.metric is None and filing.unit is None  # "" mapped back to None
 
 
 def test_eval_runner_end_to_end(settings, db, tmp_path):
@@ -113,3 +127,54 @@ def test_eval_runner_end_to_end(settings, db, tmp_path):
     readme.write_text("a\n<!-- RESULTS:START -->\nold\n<!-- RESULTS:END -->\n")
     body = report(out, readme)
     assert "Critic fault injection" in body and "old" not in readme.read_text()
+
+
+def test_fault_injection_runs_llm_critic_and_eval_stops_on_systematic_failure(
+    settings, db, tmp_path
+):
+    import pytest
+
+    item = EvalItem(
+        qid="growth-NVDA-revenue-2025",
+        template="growth",
+        tickers=["NVDA"],
+        requires=["quant"],
+        question="How did NVIDIA's revenue change in fiscal 2025 and why?",
+        truth=[TruthNumber(label="rev", value=130_497_000_000, unit="USD")],
+    )
+    kwargs = {"filings_tool": static_filings_tool(PASSAGES), "db": db}
+    runs = run_items(
+        [item],
+        settings,
+        MemoryStore(tmp_path / "m.sqlite"),
+        "main",
+        backend=ScriptedBackend(),
+        **kwargs,
+    )
+    # The critic rejects nothing here, so only code checks catch the corruptions; the point
+    # is that the LLM-review path builds valid requests end to end.
+    faults = fault_injection(runs, settings, use_llm=True, backend=ScriptedBackend(), **kwargs)
+    assert len(faults) and "with_llm" in faults and (faults["llm_cost"] >= 0).all()
+
+    class Broken:
+        def create(self, **req):
+            raise RuntimeError("400 invalid request")
+
+    with pytest.raises(RuntimeError, match="Stopping the eval"):
+        run_items(
+            [item, item, item],
+            settings,
+            MemoryStore(tmp_path / "m2.sqlite"),
+            "x",
+            backend=Broken(),
+            **kwargs,
+        )
+
+
+def test_xbrl_queries_are_thread_safe(db):
+    from concurrent.futures import ThreadPoolExecutor
+
+    sql = "SELECT ticker, SUM(value) AS v FROM financials GROUP BY ticker ORDER BY ticker"
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        outs = list(pool.map(lambda _: db.query(sql), range(200)))
+    assert len(set(outs)) == 1
