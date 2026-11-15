@@ -252,13 +252,18 @@ def build_graph(deps: Deps, checkpointer: Any = None):
             user += f"\n\nYour previous draft:\n{_strip_sources(state['memo'])}\n\nReviewer issues to fix:\n{issues}"
         if state.get("human_feedback"):
             user += f"\n\nFeedback from the human reviewer:\n{state['human_feedback']}"
-        resp = llm.call(
-            agent="writer",
-            model=s.models.writer,
-            system=system,
-            messages=[{"role": "user", "content": user}],
-            max_tokens=2500,
-        )
+        # A memo cut off at the token limit reads as unfinished to the critic and the client,
+        # so a truncated draft is rewritten with more room instead of being passed on.
+        for room in (4000, 8000):
+            resp = llm.call(
+                agent="writer",
+                model=s.models.writer,
+                system=system,
+                messages=[{"role": "user", "content": user}],
+                max_tokens=room,
+            )
+            if resp.get("stop_reason") != "max_tokens":
+                break
         return {
             "memo": _strip_sources(text_of(resp)).strip()
             + "\n\n"

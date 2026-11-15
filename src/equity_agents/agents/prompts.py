@@ -62,7 +62,9 @@ Short paragraphs or bullets. Use a table when comparing numbers across companies
 What the evidence does not cover, data limitations, low-confidence findings.
 
 Rules:
-- Cite finding ids in square brackets after every fact, e.g. "Revenue rose 114% [F3]."
+- Keep the memo under 450 words. Be direct; don't restate the same figure in several sections.
+- Cite finding ids in square brackets after every fact, e.g. "Revenue rose 114% [F3]." Every
+  sentence or bullet that contains a number needs a citation, including in the caveats.
 - Every number must appear in a finding (same value, unit and period). Present large USD
   values in billions with one decimal ("$130.5 billion"), percentages with one decimal.
   If you need a number that no finding contains, leave it out.

@@ -208,3 +208,26 @@ def test_memory_is_thread_safe(tmp_path):
     with ThreadPoolExecutor(max_workers=32) as pool:
         list(pool.map(work, range(1000)))
     assert mem.stats()["facts"] == 100
+
+
+def test_writer_rewrites_a_memo_cut_off_at_the_token_limit(settings, make):
+    deps, backend = make()
+    original = backend.create
+    limits = []
+
+    def create(**req):
+        resp = original(**req)
+        if "writer on an equity" in req["system"][0]["text"]:
+            limits.append(req["max_tokens"])
+            if len(limits) == 1:
+                cut = resp["content"][0]["text"][:120]
+                return {
+                    **resp,
+                    "content": [{"type": "text", "text": cut}],
+                    "stop_reason": "max_tokens",
+                }
+        return resp
+
+    backend.create = create
+    out = research(QUESTION, settings, run_id="cut", deps=deps)
+    assert limits[:2] == [4000, 8000] and "## Risks and caveats" in out.memo
