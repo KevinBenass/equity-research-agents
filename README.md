@@ -175,7 +175,7 @@ src/equity_agents/
 - **Why deterministic checks before the LLM critic?** "Is this number in the evidence?" has an exact answer; asking a model is slower, costlier and occasionally wrong. The LLM reviews only what code cannot decide.
 - **Why remember facts only from approved runs?** Memory that absorbs unverified numbers compounds errors across runs. Facts are versioned so a correction supersedes rather than silently overwrites.
 
-- **Limitations.** 24 template-generated questions over 8 companies is enough to compare designs, not to claim production accuracy. Claude reviews Claude's work (a different model tier for the critic, plus code checks for everything code can decide). Ground truth covers numbers, not the quality of explanations.
+- **Limitations.** 24 template-generated questions over 8 companies is enough to compare designs, not to claim production accuracy.
 
 ## How this was built
 
